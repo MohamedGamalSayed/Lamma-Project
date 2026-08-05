@@ -50,7 +50,7 @@ curl http://localhost:5000/api/servers -H "Authorization: Bearer YOUR_TOKEN"
 
 **List channels in a server** (replace `1` with your server's id):
 ```bash
-curl http://localhost:5000/api/servers/1/channels -H "Authorization: Bearer YOUR_TOKEN"
+curl http://localhost:5000/api/servers/1/channels -H "Authorization: Bearer eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpZCI6MSwidXNlcm5hbWUiOiJ0ZXN0dXNlciIsImlhdCI6MTc4NTcxNzA1OCwiZXhwIjoxNzg2MzIxODU4fQ.DhjUs-lafeg-cyirw9a5HJ3M2OM8_V79t5-oCah50nE"
 ```
 
 ## Testing real-time chat (the actual fun part)

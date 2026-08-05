@@ -4,16 +4,30 @@
   <title>Chat Test Client</title>
   <script src="https://cdn.socket.io/4.7.5/socket.io.min.js"></script>
   <style>
-    body { font-family: sans-serif; max-width: 700px; margin: 40px auto; }
-    input, button, textarea { padding: 8px; margin: 4px 0; width: 100%; box-sizing: border-box; }
-    #messages { border: 1px solid #ccc; height: 250px; overflow-y: auto; padding: 10px; margin-top: 10px; }
-    .msg { margin-bottom: 6px; }
+    body { font-family: sans-serif; max-width: 760px; margin: 40px auto; }
+    input, button, textarea { padding: 8px; margin: 4px 0; box-sizing: border-box; }
+    input[type=text], input:not([type]) { width: 100%; }
+    #messages { border: 1px solid #ccc; height: 300px; overflow-y: auto; padding: 10px; margin-top: 10px; }
+    .msg { margin-bottom: 10px; }
     .msg b { color: #4a4a8a; }
+    .msg img.attachment, .msg video.attachment { display: block; max-width: 220px; max-height: 220px; margin-top: 4px; border-radius: 6px; }
+    .reactions { margin-top: 4px; }
+    .reaction-badge {
+      display: inline-block; border: 1px solid #ccc; border-radius: 12px;
+      padding: 2px 8px; margin-right: 4px; font-size: 12px; cursor: pointer; background: #f4f4f4;
+    }
+    .picker { display: inline-block; }
+    .picker button { padding: 2px 6px; margin: 0 2px; font-size: 14px; cursor: pointer; }
+    .row { display: flex; gap: 8px; align-items: center; }
+    .row > * { margin: 4px 0; }
+    #gifResults { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 6px; max-height: 200px; overflow-y: auto; }
+    #gifResults img { height: 80px; cursor: pointer; border-radius: 4px; }
     #log { color: #888; font-size: 12px; white-space: pre-wrap; margin-top: 10px; }
+    fieldset { margin-top: 14px; }
   </style>
 </head>
 <body>
-  <h2>Chat Test Client (Week 3 debug page — not the real frontend)</h2>
+  <h2>Chat Test Client (Week 6 debug page — not the real frontend)</h2>
 
   <label>1. Paste your JWT token (from login):</label>
   <input id="token" placeholder="eyJhbGciOi..." />
@@ -28,19 +42,63 @@
   <input id="messageInput" placeholder="Type a message and press Enter" onkeydown="if(event.key==='Enter') sendMessage()" />
   <button onclick="sendMessage()">Send</button>
 
+  <fieldset>
+    <legend>Attach a file (image or video)</legend>
+    <div class="row">
+      <input type="file" id="fileInput" accept="image/*,video/*" />
+      <button onclick="uploadAndSend()">Upload & Send</button>
+    </div>
+    <div id="uploadStatus" style="font-size:12px;color:#888;"></div>
+  </fieldset>
+
+  <fieldset>
+    <legend>Search & send a GIF</legend>
+    <div class="row">
+      <input type="text" id="gifQuery" placeholder="cats" style="width:auto;flex:1;" />
+      <button onclick="searchGifs()">Search</button>
+    </div>
+    <div id="gifResults"></div>
+  </fieldset>
+
   <div id="log"></div>
 
   <script>
     let socket = null;
+    let currentUserId = null;
+    const API_BASE = 'http://localhost:5000/api';
+
     const log = (text) => {
       document.getElementById('log').textContent += text + '\n';
     };
 
+    function getToken() {
+      return document.getElementById('token').value.trim();
+    }
+
+    // Decode the JWT payload just so we know "which user am I" — not for
+    // auth, that's still verified server-side on every request/socket event.
+    function decodeUserId(token) {
+      try {
+        const payload = JSON.parse(atob(token.split('.')[1]));
+        return payload.id;
+      } catch {
+        return null;
+      }
+    }
+
     function connectAndJoin() {
-      const token = document.getElementById('token').value.trim();
+      const token = getToken();
       const channelId = document.getElementById('channelId').value.trim();
 
       if (!token) { alert('paste your token first'); return; }
+      currentUserId = decodeUserId(token);
+
+      // If we already have a live connection, close it before opening a new
+      // one instead of leaking a second socket for the same user.
+      if (socket) {
+        socket.disconnect();
+        socket = null;
+      }
 
       // Change this URL if your backend runs somewhere other than localhost:5000
       socket = io('http://localhost:5000', {
@@ -51,6 +109,7 @@
         log('Connected. Socket ID: ' + socket.id);
         socket.emit('join_channel', channelId);
         log('Joined channel ' + channelId);
+        loadHistory(channelId);
       });
 
       socket.on('connect_error', (err) => {
@@ -58,27 +117,189 @@
       });
 
       socket.on('new_message', (message) => {
-        const div = document.getElementById('messages');
-        const p = document.createElement('div');
-        p.className = 'msg';
-        p.innerHTML = '<b>' + message.username + ':</b> ' + message.content;
-        div.appendChild(p);
-        div.scrollTop = div.scrollHeight;
+        renderMessage(message);
       });
 
       socket.on('message_error', (err) => {
         log('Message error: ' + err.error);
       });
+
+      socket.on('reaction_added', ({ messageId, emoji }) => {
+        applyReactionDelta(messageId, emoji, +1);
+      });
+
+      socket.on('reaction_removed', ({ messageId, emoji }) => {
+        applyReactionDelta(messageId, emoji, -1);
+      });
     }
 
-    function sendMessage() {
+    async function loadHistory(channelId) {
+      try {
+        const res = await fetch(`${API_BASE}/channels/${channelId}/messages`, {
+          headers: { Authorization: 'Bearer ' + getToken() },
+        });
+        const history = await res.json();
+        if (!Array.isArray(history)) return;
+        document.getElementById('messages').innerHTML = '';
+        history.forEach(renderMessage);
+      } catch (err) {
+        log('Failed to load history: ' + err.message);
+      }
+    }
+
+    function attachmentHtml(url) {
+      if (!url) return '';
+      const isVideo = /\.(mp4|webm|mov)(\?|$)/i.test(url);
+      return isVideo
+        ? `<video class="attachment" src="${url}" controls></video>`
+        : `<img class="attachment" src="${url}" />`;
+    }
+
+    const EMOJI_CHOICES = ['👍', '❤️', '😂', '😮', '😢', '🔥'];
+
+    function reactionsHtml(messageId, reactions) {
+      const badges = (reactions || []).map(
+        (r) => `<span class="reaction-badge" data-message-id="${messageId}" data-emoji="${r.emoji}" onclick="toggleReaction(${messageId}, '${r.emoji}')">${r.emoji} ${r.count}</span>`
+      ).join('');
+
+      const picker = EMOJI_CHOICES.map(
+        (e) => `<button onclick="toggleReaction(${messageId}, '${e}')">${e}</button>`
+      ).join('');
+
+      return `<div class="reactions" data-reactions-for="${messageId}">${badges}<span class="picker">${picker}</span></div>`;
+    }
+
+    function renderMessage(message) {
+      const div = document.getElementById('messages');
+      const p = document.createElement('div');
+      p.className = 'msg';
+      p.dataset.messageId = message.id;
+      p.innerHTML =
+        '<b>' + message.username + ':</b> ' + (message.content || '') +
+        attachmentHtml(message.attachment_url) +
+        reactionsHtml(message.id, message.reactions);
+      div.appendChild(p);
+      div.scrollTop = div.scrollHeight;
+    }
+
+    // Live-patch a message's reaction badges without re-fetching history,
+    // using the same { emoji, count } shape the REST endpoint returns.
+    function applyReactionDelta(messageId, emoji, delta) {
+      const msgEl = document.querySelector(`.msg[data-message-id="${messageId}"]`);
+      if (!msgEl) return;
+
+      const container = msgEl.querySelector(`[data-reactions-for="${messageId}"]`);
+      if (!container) return;
+
+      let badge = container.querySelector(`.reaction-badge[data-emoji="${CSS.escape(emoji)}"]`);
+      let count = badge ? parseInt(badge.textContent.trim().split(' ').pop(), 10) : 0;
+      count += delta;
+
+      if (count <= 0) {
+        if (badge) badge.remove();
+        return;
+      }
+
+      if (!badge) {
+        badge = document.createElement('span');
+        badge.className = 'reaction-badge';
+        badge.dataset.messageId = messageId;
+        badge.dataset.emoji = emoji;
+        badge.onclick = () => toggleReaction(messageId, emoji);
+        container.prepend(badge);
+      }
+      badge.textContent = `${emoji} ${count}`;
+    }
+
+    // Track which (messageId, emoji) pairs *I* currently have active, so a
+    // click toggles add/remove correctly without re-fetching history.
+    const myReactions = new Set();
+
+    function toggleReaction(messageId, emoji) {
+      if (!socket) return;
+      const key = messageId + ':' + emoji;
+      if (myReactions.has(key)) {
+        socket.emit('remove_reaction', { messageId, emoji });
+        myReactions.delete(key);
+      } else {
+        socket.emit('add_reaction', { messageId, emoji });
+        myReactions.add(key);
+      }
+    }
+
+    function sendMessage(attachmentUrl) {
       const channelId = document.getElementById('channelId').value.trim();
       const input = document.getElementById('messageInput');
       const content = input.value.trim();
-      if (!content || !socket) return;
+      if (!content && !attachmentUrl) return;
+      if (!socket) { alert('connect first'); return; }
 
-      socket.emit('send_message', { channelId, content });
+      socket.emit('send_message', { channelId, content, attachmentUrl });
       input.value = '';
+    }
+
+    async function uploadAndSend() {
+      const fileInput = document.getElementById('fileInput');
+      const status = document.getElementById('uploadStatus');
+      const file = fileInput.files[0];
+      if (!file) { alert('pick a file first'); return; }
+      if (!getToken()) { alert('paste your token first'); return; }
+
+      status.textContent = 'Uploading...';
+      try {
+        const formData = new FormData();
+        formData.append('file', file);
+
+        const res = await fetch(`${API_BASE}/media/upload`, {
+          method: 'POST',
+          headers: { Authorization: 'Bearer ' + getToken() },
+          body: formData,
+        });
+        const data = await res.json();
+
+        if (!res.ok) {
+          status.textContent = 'Upload failed: ' + (data.error || res.status);
+          return;
+        }
+
+        status.textContent = 'Uploaded. Sending...';
+        sendMessage(data.url);
+        status.textContent = 'Sent.';
+        fileInput.value = '';
+      } catch (err) {
+        status.textContent = 'Upload error: ' + err.message;
+      }
+    }
+
+    async function searchGifs() {
+      const q = document.getElementById('gifQuery').value.trim();
+      const results = document.getElementById('gifResults');
+      if (!q) return;
+      if (!getToken()) { alert('paste your token first'); return; }
+
+      results.innerHTML = 'Searching...';
+      try {
+        const res = await fetch(`${API_BASE}/media/gifs/search?q=${encodeURIComponent(q)}`, {
+          headers: { Authorization: 'Bearer ' + getToken() },
+        });
+        const gifs = await res.json();
+
+        if (!res.ok) {
+          results.innerHTML = 'Error: ' + (gifs.error || res.status);
+          return;
+        }
+
+        results.innerHTML = '';
+        gifs.forEach((gif) => {
+          const img = document.createElement('img');
+          img.src = gif.preview;
+          img.title = gif.title;
+          img.onclick = () => sendMessage(gif.url);
+          results.appendChild(img);
+        });
+      } catch (err) {
+        results.innerHTML = 'Error: ' + err.message;
+      }
     }
   </script>
 </body>
