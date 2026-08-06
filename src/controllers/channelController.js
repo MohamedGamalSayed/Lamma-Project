@@ -64,12 +64,13 @@ async function listChannels(req, res) {
 }
 
 // Get message history for a channel (used when a user first opens a channel,
-// before any new live messages arrive over the socket)
+// before any new live messages arrive over the socket). Also attaches any
+// existing reactions, grouped by emoji, so a page refresh doesn't lose them.
 async function getChannelMessages(req, res) {
   try {
     const channelId = parseInt(req.params.channelId, 10);
 
-    const result = await pool.query(
+    const messagesResult = await pool.query(
       `SELECT m.*, u.username
        FROM messages m
        JOIN users u ON u.id = m.user_id
@@ -79,7 +80,37 @@ async function getChannelMessages(req, res) {
       [channelId]
     );
 
-    res.json(result.rows);
+    const messages = messagesResult.rows;
+    if (messages.length === 0) {
+      return res.json([]);
+    }
+
+    const messageIds = messages.map((m) => m.id);
+    const reactionsResult = await pool.query(
+      `SELECT r.message_id, r.emoji, r.user_id, u.username
+       FROM reactions r
+       JOIN users u ON u.id = r.user_id
+       WHERE r.message_id = ANY($1)`,
+      [messageIds]
+    );
+
+    // Group into { [messageId]: [{ emoji, count, users }] } so the frontend
+    // can render "👍 3" badges without doing the counting itself.
+    const reactionsByMessage = {};
+    for (const row of reactionsResult.rows) {
+      if (!reactionsByMessage[row.message_id]) reactionsByMessage[row.message_id] = {};
+      const byEmoji = reactionsByMessage[row.message_id];
+      if (!byEmoji[row.emoji]) byEmoji[row.emoji] = { emoji: row.emoji, count: 0, users: [] };
+      byEmoji[row.emoji].count += 1;
+      byEmoji[row.emoji].users.push(row.username);
+    }
+
+    const withReactions = messages.map((m) => ({
+      ...m,
+      reactions: reactionsByMessage[m.id] ? Object.values(reactionsByMessage[m.id]) : [],
+    }));
+
+    res.json(withReactions);
   } catch (err) {
     console.error('Get messages error:', err);
     res.status(500).json({ error: 'could not load messages' });

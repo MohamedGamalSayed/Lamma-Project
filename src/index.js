@@ -7,6 +7,7 @@ const { Server } = require('socket.io');
 const authRoutes = require('./routes/authRoutes');
 const serverRoutes = require('./routes/serverRoutes');
 const channelRoutes = require('./routes/channelRoutes');
+const mediaRoutes = require('./routes/mediaRoutes');
 const setupSocket = require('./sockets/chatSocket');
 
 const app = express();
@@ -21,6 +22,7 @@ app.get('/', (req, res) => {
 app.use('/api/auth', authRoutes);
 app.use('/api/servers', serverRoutes);
 app.use('/api', channelRoutes); // channel routes already include "/servers/:id/channels" in their path
+app.use('/api/media', mediaRoutes);
 
 // Wrap the Express app in a plain HTTP server so Socket.IO can attach to
 // the same server (both HTTP requests and WebSocket connections share port 5000)

@@ -39,6 +39,19 @@ CREATE TABLE IF NOT EXISTS messages (
   created_at      TIMESTAMPTZ NOT NULL DEFAULT NOW()
 );
 
+-- Reactions (emoji) on messages. UNIQUE constraint lets the socket handler
+-- use ON CONFLICT DO NOTHING so the same user clicking the same emoji twice
+-- is a no-op instead of an error.
+CREATE TABLE IF NOT EXISTS reactions (
+  id          SERIAL PRIMARY KEY,
+  message_id  INTEGER NOT NULL REFERENCES messages(id) ON DELETE CASCADE,
+  user_id     INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+  emoji       VARCHAR(16) NOT NULL,
+  created_at  TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+  UNIQUE(message_id, user_id, emoji)
+);
+CREATE INDEX IF NOT EXISTS idx_reactions_message ON reactions(message_id);
+
 -- Speeds up "get all channels for this server" and "get all messages for this channel"
 CREATE INDEX IF NOT EXISTS idx_channels_server ON channels(server_id);
 CREATE INDEX IF NOT EXISTS idx_messages_channel ON messages(channel_id);
